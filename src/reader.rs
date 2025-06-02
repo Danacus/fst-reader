@@ -5,6 +5,7 @@
 
 use crate::io::*;
 use crate::types::*;
+use std::io::BufReader;
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 
 /// Reads in a FST file.
@@ -15,8 +16,10 @@ pub struct FstReader<R: BufRead + Seek> {
 
 enum InputVariant<R: BufRead + Seek> {
     Original(R),
+    Incomplete(R, BufReader<std::fs::File>),
     // Uncompressed(BufReader<std::fs::File>),
     UncompressedInMem(std::io::Cursor<Vec<u8>>),
+    IncompleteUncompressedInMem(std::io::Cursor<Vec<u8>>, BufReader<std::fs::File>),
 }
 
 /// Filter the changes by time and/or signals
@@ -83,14 +86,29 @@ pub struct FstHeader {
 impl<R: BufRead + Seek> FstReader<R> {
     /// Reads in the FST file meta-data.
     pub fn open(input: R) -> Result<Self> {
-        Self::open_internal(input, false)
+        Self::open_internal(input, None, false)
+    }
+
+    pub fn open_incomplete(input: R, hier: BufReader<std::fs::File>) -> Result<Self> {
+        Self::open_internal(input, Some(hier), false)
     }
 
     pub fn open_and_read_time_table(input: R) -> Result<Self> {
-        Self::open_internal(input, true)
+        Self::open_internal(input, None, true)
     }
 
-    fn open_internal(mut input: R, read_time_table: bool) -> Result<Self> {
+    pub fn open_incomplete_and_read_time_table(
+        input: R,
+        hier: BufReader<std::fs::File>,
+    ) -> Result<Self> {
+        Self::open_internal(input, Some(hier), true)
+    }
+
+    fn open_internal(
+        mut input: R,
+        hier: Option<BufReader<std::fs::File>>,
+        read_time_table: bool,
+    ) -> Result<Self> {
         let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
         match uncompressed_input {
             UncompressGzipWrapper::None => {
@@ -98,7 +116,11 @@ impl<R: BufRead + Seek> FstReader<R> {
                 header_reader.read(read_time_table)?;
                 let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
                 Ok(FstReader {
-                    input: InputVariant::Original(input),
+                    input: if let Some(hier) = hier {
+                        InputVariant::Incomplete(input, hier)
+                    } else {
+                        InputVariant::Original(input)
+                    },
                     meta,
                 })
             }
@@ -107,7 +129,11 @@ impl<R: BufRead + Seek> FstReader<R> {
                 header_reader.read(read_time_table)?;
                 let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
                 Ok(FstReader {
-                    input: InputVariant::UncompressedInMem(uc2),
+                    input: if let Some(hier) = hier {
+                        InputVariant::IncompleteUncompressedInMem(uc2, hier)
+                    } else {
+                        InputVariant::UncompressedInMem(uc2)
+                    },
                     meta,
                 })
             }
@@ -137,7 +163,11 @@ impl<R: BufRead + Seek> FstReader<R> {
     pub fn read_hierarchy(&mut self, callback: impl FnMut(FstHierarchyEntry)) -> Result<()> {
         match &mut self.input {
             InputVariant::Original(input) => read_hierarchy(input, &self.meta, callback),
+            InputVariant::Incomplete(_, input) => read_hierarchy(input, &self.meta, callback),
             InputVariant::UncompressedInMem(input) => read_hierarchy(input, &self.meta, callback),
+            InputVariant::IncompleteUncompressedInMem(_, input) => {
+                read_hierarchy(input, &self.meta, callback)
+            }
         }
     }
 
@@ -171,7 +201,13 @@ impl<R: BufRead + Seek> FstReader<R> {
             InputVariant::Original(input) => {
                 read_signals(input, &self.meta, &data_filter, callback)
             }
+            InputVariant::Incomplete(input, _) => {
+                read_signals(input, &self.meta, &data_filter, callback)
+            }
             InputVariant::UncompressedInMem(input) => {
+                read_signals(input, &self.meta, &data_filter, callback)
+            }
+            InputVariant::IncompleteUncompressedInMem(input, _) => {
                 read_signals(input, &self.meta, &data_filter, callback)
             }
         }
@@ -458,23 +494,28 @@ impl<R: Read + Seek> HeaderReader<R> {
                 BlockType::GZipWrapper => panic!("GZip Wrapper should have been handled earlier!"),
                 BlockType::Skip => {
                     let section_length = read_u64(&mut self.input)?;
+                    if section_length == 0 {
+                        break;
+                    }
                     self.skip(section_length, 8)?;
                 }
             };
         }
+
         Ok(())
     }
 
     fn into_input_and_meta_data(mut self) -> Result<(R, MetaData)> {
         self.input.seek(SeekFrom::Start(0))?;
+        let hierarchy = self.hierarchy.unwrap_or((HierarchyCompression::None, 0));
         let meta = MetaData {
             header: self.header.unwrap(),
-            signals: self.signals.unwrap(),
+            signals: self.signals.unwrap_or_default(),
             blackouts: self.blackouts.unwrap_or_default(),
             data_sections: self.data_sections,
             float_endian: self.float_endian,
-            hierarchy_compression: self.hierarchy.unwrap().0,
-            hierarchy_offset: self.hierarchy.unwrap().1,
+            hierarchy_compression: hierarchy.0,
+            hierarchy_offset: hierarchy.1,
             time_table: self.time_table,
         };
         Ok((self.input, meta))

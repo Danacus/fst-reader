@@ -58,6 +58,8 @@ pub enum ReaderError {
     AttributeType(#[from] TryFromPrimitiveError<AttributeType>),
     #[error("Unexpected misc attribute type")]
     MiscType(#[from] TryFromPrimitiveError<MiscType>),
+    #[error("Missing geometry block")]
+    MissingGeometryBlock,
 }
 
 pub type ReadResult<T> = Result<T, ReaderError>;
@@ -630,10 +632,18 @@ pub(crate) fn read_hierarchy_bytes(
     compression: HierarchyCompression,
 ) -> ReadResult<Vec<u8>> {
     let section_length = read_u64(input)? as usize;
-    let uncompressed_length = read_u64(input)? as usize;
+    let mut uncompressed_length = read_u64(input)? as usize;
     let compressed_length = section_length - 2 * 8;
 
     let bytes = match compression {
+        // HierarchyCompression::None => read_bytes(input, uncompressed_length)?,
+        HierarchyCompression::None => {
+            let mut buf = Vec::new();
+            uncompressed_length = input.read_to_end(&mut buf)?;
+            buf.resize(uncompressed_length, 0);
+            dbg!(&buf[0..100]);
+            buf
+        }
         HierarchyCompression::ZLib => {
             read_gzip_compressed_bytes(input, uncompressed_length, compressed_length)?
         }
@@ -689,6 +699,9 @@ pub(crate) fn write_hierarchy_bytes(
     write_u64(output, uncompressed_length)?;
 
     match compression {
+        HierarchyCompression::None => {
+            output.write_all(bytes)?;
+        }
         HierarchyCompression::ZLib => {
             write_gzip_compressed_bytes(output, bytes, HIERARCHY_GZIP_COMPRESSION_LEVEL)?;
         }
@@ -831,6 +844,7 @@ pub(crate) fn read_hierarchy_entry(
         Ok(tpe) => tpe,
         Err(_) => return Ok(None),
     };
+    dbg!(&entry_tpe);
     let entry = match entry_tpe {
         HIERARCHY_TPE_VCD_SCOPE => {
             // VcdScope (ScopeType)
