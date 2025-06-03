@@ -7,6 +7,7 @@
 // and thus we cannot compare.
 
 use fst_reader::*;
+use std::collections::binary_heap::Iter;
 use std::io::{BufRead, Seek};
 use std::path::{Path, PathBuf};
 
@@ -64,6 +65,31 @@ fn load_verilator_incomplete() {
 
     let result = FstReader::open(std::io::BufReader::new(f));
     assert!(matches!(result, Err(ReaderError::MissingGeometry())));
+
+    let f = std::fs::File::open("fsts/verilator/verilator-incomplete.fst")
+        .unwrap_or_else(|_| panic!("Failed to open file"));
+    let h = std::fs::File::open("fsts/verilator/verilator-incomplete.fst.hier")
+        .unwrap_or_else(|_| panic!("Failed to open file"));
+    let mut reader =
+        FstReader::open_incomplete(std::io::BufReader::new(f), std::io::BufReader::new(h)).unwrap();
+
+    load_header(&mut reader);
+    // reader
+    //     .read_signals(&FstFilter::all(), |t, handle, value| {
+    //         dbg!(t);
+    //         dbg!(handle);
+
+    //         match value {
+    //             FstSignalValue::String(items) => {
+    //                 dbg!(items);
+    //             }
+    //             FstSignalValue::Real(v) => {
+    //                 dbg!(v);
+    //             }
+    //         }
+    //     })
+    //     .unwrap();
+    // unreachable!()
 }
 
 #[test]

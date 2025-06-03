@@ -15,8 +15,10 @@ pub struct FstReader<R: BufRead + Seek> {
 
 enum InputVariant<R: BufRead + Seek> {
     Original(R),
+    Incomplete(R, std::io::BufReader<std::fs::File>),
     // Uncompressed(BufReader<std::fs::File>),
     UncompressedInMem(std::io::Cursor<Vec<u8>>),
+    IncompleteUncompressedInMem(std::io::Cursor<Vec<u8>>, std::io::BufReader<std::fs::File>),
 }
 
 /// Filter the changes by time and/or signals
@@ -90,6 +92,63 @@ impl<R: BufRead + Seek> FstReader<R> {
         Self::open_internal(input, true)
     }
 
+    pub fn open_incomplete(input: R, hierarchy: std::io::BufReader<std::fs::File>) -> Result<Self> {
+        Self::open_incomplete_internal(input, hierarchy, false)
+    }
+
+    pub fn open_incomplete_and_read_time_table(
+        input: R,
+        hierarchy: std::io::BufReader<std::fs::File>,
+    ) -> Result<Self> {
+        Self::open_incomplete_internal(input, hierarchy, true)
+    }
+
+    fn open_incomplete_internal(
+        mut input: R,
+        mut hierarchy: std::io::BufReader<std::fs::File>,
+        read_time_table: bool,
+    ) -> Result<Self> {
+        let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
+        match uncompressed_input {
+            UncompressGzipWrapper::None => {
+                let mut header_reader = HeaderReader::new(input);
+                match header_reader.read(read_time_table) {
+                    Ok(_) => {}
+                    Err(ReaderError::MissingGeometry() | ReaderError::MissingHierarchy()) => {
+                        header_reader
+                            .hierarchy
+                            .get_or_insert((HierarchyCompression::Uncompressed, 0));
+                        header_reader.reconstruct_geometry(&mut hierarchy)?;
+                    }
+                    Err(e) => return Err(e),
+                };
+                let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
+                Ok(FstReader {
+                    input: InputVariant::Incomplete(input, hierarchy),
+                    meta,
+                })
+            }
+            UncompressGzipWrapper::InMemory(uc) => {
+                let mut header_reader = HeaderReader::new(uc);
+                match header_reader.read(read_time_table) {
+                    Ok(_) => {}
+                    Err(ReaderError::MissingGeometry() | ReaderError::MissingHierarchy()) => {
+                        header_reader
+                            .hierarchy
+                            .get_or_insert((HierarchyCompression::Uncompressed, 0));
+                        header_reader.reconstruct_geometry(&mut hierarchy)?;
+                    }
+                    Err(e) => return Err(e),
+                };
+                let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
+                Ok(FstReader {
+                    input: InputVariant::IncompleteUncompressedInMem(uc2, hierarchy),
+                    meta,
+                })
+            }
+        }
+    }
+
     fn open_internal(mut input: R, read_time_table: bool) -> Result<Self> {
         let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
         match uncompressed_input {
@@ -137,7 +196,11 @@ impl<R: BufRead + Seek> FstReader<R> {
     pub fn read_hierarchy(&mut self, callback: impl FnMut(FstHierarchyEntry)) -> Result<()> {
         match &mut self.input {
             InputVariant::Original(input) => read_hierarchy(input, &self.meta, callback),
+            InputVariant::Incomplete(_, input) => read_hierarchy(input, &self.meta, callback),
             InputVariant::UncompressedInMem(input) => read_hierarchy(input, &self.meta, callback),
+            InputVariant::IncompleteUncompressedInMem(_, input) => {
+                read_hierarchy(input, &self.meta, callback)
+            }
         }
     }
 
@@ -171,7 +234,13 @@ impl<R: BufRead + Seek> FstReader<R> {
             InputVariant::Original(input) => {
                 read_signals(input, &self.meta, &data_filter, callback)
             }
+            InputVariant::Incomplete(input, _) => {
+                read_signals(input, &self.meta, &data_filter, callback)
+            }
             InputVariant::UncompressedInMem(input) => {
+                read_signals(input, &self.meta, &data_filter, callback)
+            }
+            InputVariant::IncompleteUncompressedInMem(input, _) => {
                 read_signals(input, &self.meta, &data_filter, callback)
             }
         }
@@ -433,6 +502,27 @@ impl<R: Read + Seek> HeaderReader<R> {
             "Only a single hierarchy block is expected!"
         );
         self.hierarchy = Some((compression, file_offset));
+        Ok(())
+    }
+
+    fn reconstruct_geometry(&mut self, hierarchy: &mut (impl BufRead + Seek)) -> Result<()> {
+        hierarchy.seek(SeekFrom::Start(0))?;
+        let bytes = read_hierarchy_bytes(hierarchy, HierarchyCompression::Uncompressed)?;
+        let mut input = bytes.as_slice();
+        let mut handle_count = 0u32;
+        let mut signals: Vec<SignalInfo> = Vec::new();
+        while let Some(entry) = read_hierarchy_entry(&mut input, &mut handle_count)? {
+            match entry {
+                FstHierarchyEntry::Var {
+                    length, is_alias, ..
+                } if !is_alias => {
+                    // dbg!(&entry);
+                    signals.push(SignalInfo::from_file_format(length));
+                }
+                _ => {}
+            }
+        }
+        self.signals = Some(signals);
         Ok(())
     }
 

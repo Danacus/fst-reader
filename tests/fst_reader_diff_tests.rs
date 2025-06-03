@@ -334,6 +334,37 @@ fn run_diff_test(filename: &str, _filter: &FstFilter) {
     unsafe { fst_sys::fstReaderClose(exp_handle) };
 }
 
+fn run_incomplete_diff_test(filename: &str, hierarchy: &str, _filter: &FstFilter) {
+    // open file with FST library from GTKWave
+    let c_path = CString::new(filename).unwrap();
+    let exp_handle = unsafe { fst_sys::fstReaderOpen(c_path.as_ptr()) };
+
+    // open file with our library
+    let our_f = File::open(filename).unwrap_or_else(|_| panic!("Failed to open {}", filename));
+    let our_h = File::open(hierarchy).unwrap_or_else(|_| panic!("Failed to open {}", filename));
+    let mut our_reader = FstReader::open_incomplete(
+        std::io::BufReader::new(our_f),
+        std::io::BufReader::new(our_h),
+    )
+    .unwrap();
+
+    // compare header
+    let exp_header = fst_sys_load_header(exp_handle);
+    let our_header = our_reader.get_header();
+    // assert_eq!(our_header, exp_header);
+
+    // compare hierarchy
+    let exp_hierarchy = fst_sys_load_hierarchy(exp_handle);
+    let is_real = diff_hierarchy(&mut our_reader, exp_hierarchy);
+
+    // compare signals
+    let exp_signals = fst_sys_load_signals(exp_handle, &is_real);
+    diff_signals(&mut our_reader, exp_signals);
+
+    // close C-library handle
+    unsafe { fst_sys::fstReaderClose(exp_handle) };
+}
+
 #[test]
 fn diff_aldec_spi_write() {
     run_diff_test("fsts/aldec/SPI_Write.vcd.fst", &FstFilter::all());
@@ -571,6 +602,15 @@ fn diff_verilator_swerv1() {
 #[test]
 fn diff_verilator_vlt_dump() {
     run_diff_test("fsts/verilator/vlt_dump.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_verilator_incomplete_dump() {
+    run_incomplete_diff_test(
+        "fsts/verilator/verilator-incomplete.fst",
+        "fsts/verilator/verilator-incomplete.fst.hier",
+        &FstFilter::all(),
+    );
 }
 
 #[test]
