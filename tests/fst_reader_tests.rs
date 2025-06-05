@@ -7,7 +7,6 @@
 // and thus we cannot compare.
 
 use fst_reader::*;
-use std::collections::binary_heap::Iter;
 use std::io::{BufRead, Seek};
 use std::path::{Path, PathBuf};
 
@@ -21,7 +20,10 @@ fn run_load_test(filename: &str, _filter: &FstFilter) {
     load_header(&mut reader);
 }
 
-fn load_header<R: BufRead + Seek, H: BufRead + Seek>(reader: &mut FstReader<R, H>) -> Vec<String> {
+fn load_header<R: BufRead + Seek, H>(reader: &mut FstReader<R, H>) -> Vec<String>
+where
+    InputVariant<R, H>: ReadHierarchy,
+{
     let mut is_real = Vec::new();
     let mut hierarchy = Vec::new();
     let foo = |entry: FstHierarchyEntry| {

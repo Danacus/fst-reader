@@ -7,13 +7,56 @@ use crate::io::*;
 use crate::types::*;
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 
+mod sealed {
+    pub struct InternalHierarchy;
+}
+
+pub trait ReadHierarchy {
+    fn read_hierarchy(
+        &mut self,
+        meta: &MetaData,
+        callback: impl FnMut(FstHierarchyEntry),
+    ) -> Result<()>;
+}
+
+impl<R: BufRead + Seek, H: BufRead + Seek> ReadHierarchy for InputVariant<R, H> {
+    fn read_hierarchy(
+        &mut self,
+        meta: &MetaData,
+        callback: impl FnMut(FstHierarchyEntry),
+    ) -> Result<()> {
+        match self {
+            InputVariant::Original(input) => read_hierarchy(input, meta, callback),
+            InputVariant::UncompressedInMem(input) => read_hierarchy(input, meta, callback),
+            InputVariant::Incomplete(_, input) => read_hierarchy(input, meta, callback),
+            InputVariant::IncompleteUncompressedInMem(_, input) => {
+                read_hierarchy(input, meta, callback)
+            }
+        }
+    }
+}
+
+impl<R: BufRead + Seek> ReadHierarchy for InputVariant<R, sealed::InternalHierarchy> {
+    fn read_hierarchy(
+        &mut self,
+        meta: &MetaData,
+        callback: impl FnMut(FstHierarchyEntry),
+    ) -> Result<()> {
+        match self {
+            InputVariant::Original(input) => read_hierarchy(input, meta, callback),
+            InputVariant::UncompressedInMem(input) => read_hierarchy(input, meta, callback),
+            _ => unreachable!(),
+        }
+    }
+}
+
 /// Reads in a FST file.
-pub struct FstReader<R: BufRead + Seek, H = std::io::Cursor<Vec<u8>>> {
+pub struct FstReader<R: BufRead + Seek, H = sealed::InternalHierarchy> {
     input: InputVariant<R, H>,
     meta: MetaData,
 }
 
-enum InputVariant<R: BufRead + Seek, H = std::io::Cursor<Vec<u8>>> {
+pub enum InputVariant<R: BufRead + Seek, H = sealed::InternalHierarchy> {
     Original(R),
     Incomplete(R, H),
     // Uncompressed(BufReader<std::fs::File>),
@@ -178,7 +221,7 @@ impl<R: BufRead + Seek> FstReader<R> {
     }
 }
 
-impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
+impl<R: BufRead + Seek, H> FstReader<R, H> {
     pub fn get_header(&self) -> FstHeader {
         FstHeader {
             start_time: self.meta.header.start_time,
@@ -195,18 +238,6 @@ impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
         match &self.meta.time_table {
             Some(table) => Some(table),
             None => None,
-        }
-    }
-
-    /// Reads the hierarchy and calls callback for every item.
-    pub fn read_hierarchy(&mut self, callback: impl FnMut(FstHierarchyEntry)) -> Result<()> {
-        match &mut self.input {
-            InputVariant::Original(input) => read_hierarchy(input, &self.meta, callback),
-            InputVariant::Incomplete(_, input) => read_hierarchy(input, &self.meta, callback),
-            InputVariant::UncompressedInMem(input) => read_hierarchy(input, &self.meta, callback),
-            InputVariant::IncompleteUncompressedInMem(_, input) => {
-                read_hierarchy(input, &self.meta, callback)
-            }
         }
     }
 
@@ -250,6 +281,16 @@ impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
                 read_signals(input, &self.meta, &data_filter, callback)
             }
         }
+    }
+}
+
+impl<R: BufRead + Seek, H> FstReader<R, H>
+where
+    InputVariant<R, H>: ReadHierarchy,
+{
+    /// Reads the hierarchy and calls callback for every item.
+    pub fn read_hierarchy(&mut self, callback: impl FnMut(FstHierarchyEntry)) -> Result<()> {
+        self.input.read_hierarchy(&self.meta, callback)
     }
 }
 
