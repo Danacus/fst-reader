@@ -85,92 +85,77 @@ pub struct FstHeader {
 impl<R: BufRead + Seek> FstReader<R> {
     /// Reads in the FST file meta-data.
     pub fn open(input: R) -> Result<Self> {
-        Self::open_internal(input, false)
+        Self::open_internal(input, None, false)
     }
 
     pub fn open_and_read_time_table(input: R) -> Result<Self> {
-        Self::open_internal(input, true)
+        Self::open_internal(input, None, true)
     }
 
     pub fn open_incomplete(input: R, hierarchy: std::io::BufReader<std::fs::File>) -> Result<Self> {
-        Self::open_incomplete_internal(input, hierarchy, false)
+        Self::open_internal(input, Some(hierarchy), false)
     }
 
     pub fn open_incomplete_and_read_time_table(
         input: R,
         hierarchy: std::io::BufReader<std::fs::File>,
     ) -> Result<Self> {
-        Self::open_incomplete_internal(input, hierarchy, true)
+        Self::open_internal(input, Some(hierarchy), true)
     }
 
-    fn open_incomplete_internal(
+    fn open_internal(
         mut input: R,
-        mut hierarchy: std::io::BufReader<std::fs::File>,
+        mut hierarchy: Option<std::io::BufReader<std::fs::File>>,
         read_time_table: bool,
     ) -> Result<Self> {
         let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
         match uncompressed_input {
             UncompressGzipWrapper::None => {
-                let mut header_reader = HeaderReader::new(input);
-                match header_reader.read(read_time_table) {
-                    Ok(_) => {}
-                    Err(ReaderError::MissingGeometry() | ReaderError::MissingHierarchy()) => {
-                        header_reader
-                            .hierarchy
-                            .get_or_insert((HierarchyCompression::Uncompressed, 0));
-                        header_reader.reconstruct_geometry(&mut hierarchy)?;
-                    }
-                    Err(e) => return Err(e),
-                };
-                let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
+                let (input, meta) =
+                    Self::open_internal_uncompressed(input, hierarchy.as_mut(), read_time_table)?;
                 Ok(FstReader {
-                    input: InputVariant::Incomplete(input, hierarchy),
+                    input: if let Some(hierarchy) = hierarchy {
+                        InputVariant::Incomplete(input, hierarchy)
+                    } else {
+                        InputVariant::Original(input)
+                    },
                     meta,
                 })
             }
             UncompressGzipWrapper::InMemory(uc) => {
-                let mut header_reader = HeaderReader::new(uc);
-                match header_reader.read(read_time_table) {
-                    Ok(_) => {}
-                    Err(ReaderError::MissingGeometry() | ReaderError::MissingHierarchy()) => {
-                        header_reader
-                            .hierarchy
-                            .get_or_insert((HierarchyCompression::Uncompressed, 0));
-                        header_reader.reconstruct_geometry(&mut hierarchy)?;
-                    }
-                    Err(e) => return Err(e),
-                };
-                let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
+                let (uc2, meta) =
+                    Self::open_internal_uncompressed(uc, hierarchy.as_mut(), read_time_table)?;
                 Ok(FstReader {
-                    input: InputVariant::IncompleteUncompressedInMem(uc2, hierarchy),
+                    input: if let Some(hierarchy) = hierarchy {
+                        InputVariant::IncompleteUncompressedInMem(uc2, hierarchy)
+                    } else {
+                        InputVariant::UncompressedInMem(uc2)
+                    },
                     meta,
                 })
             }
         }
     }
 
-    fn open_internal(mut input: R, read_time_table: bool) -> Result<Self> {
-        let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
-        match uncompressed_input {
-            UncompressGzipWrapper::None => {
-                let mut header_reader = HeaderReader::new(input);
-                header_reader.read(read_time_table)?;
-                let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
-                Ok(FstReader {
-                    input: InputVariant::Original(input),
-                    meta,
-                })
+    fn open_internal_uncompressed<I: BufRead + Seek>(
+        input: I,
+        hierarchy: Option<&mut std::io::BufReader<std::fs::File>>,
+        read_time_table: bool,
+    ) -> Result<(I, MetaData)> {
+        let mut header_reader = HeaderReader::new(input);
+        match header_reader.read(read_time_table) {
+            Ok(_) => {}
+            Err(ReaderError::MissingGeometry() | ReaderError::MissingHierarchy())
+                if hierarchy.is_some() =>
+            {
+                header_reader
+                    .hierarchy
+                    .get_or_insert((HierarchyCompression::Uncompressed, 0));
+                header_reader.reconstruct_geometry(hierarchy.unwrap())?;
             }
-            UncompressGzipWrapper::InMemory(uc) => {
-                let mut header_reader = HeaderReader::new(uc);
-                header_reader.read(read_time_table)?;
-                let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
-                Ok(FstReader {
-                    input: InputVariant::UncompressedInMem(uc2),
-                    meta,
-                })
-            }
-        }
+            Err(e) => return Err(e),
+        };
+        Ok(header_reader.into_input_and_meta_data().unwrap())
     }
 
     pub fn get_header(&self) -> FstHeader {
