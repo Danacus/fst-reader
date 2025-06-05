@@ -21,7 +21,7 @@ fn run_load_test(filename: &str, _filter: &FstFilter) {
     load_header(&mut reader);
 }
 
-fn load_header<R: BufRead + Seek>(reader: &mut FstReader<R>) -> Vec<String> {
+fn load_header<R: BufRead + Seek, H: BufRead + Seek>(reader: &mut FstReader<R, H>) -> Vec<String> {
     let mut is_real = Vec::new();
     let mut hierarchy = Vec::new();
     let foo = |entry: FstHierarchyEntry| {
@@ -74,22 +74,6 @@ fn load_verilator_incomplete() {
         FstReader::open_incomplete(std::io::BufReader::new(f), std::io::BufReader::new(h)).unwrap();
 
     load_header(&mut reader);
-    // reader
-    //     .read_signals(&FstFilter::all(), |t, handle, value| {
-    //         dbg!(t);
-    //         dbg!(handle);
-
-    //         match value {
-    //             FstSignalValue::String(items) => {
-    //                 dbg!(items);
-    //             }
-    //             FstSignalValue::Real(v) => {
-    //                 dbg!(v);
-    //             }
-    //         }
-    //     })
-    //     .unwrap();
-    // unreachable!()
 }
 
 #[test]

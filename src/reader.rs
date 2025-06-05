@@ -8,17 +8,17 @@ use crate::types::*;
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 
 /// Reads in a FST file.
-pub struct FstReader<R: BufRead + Seek> {
-    input: InputVariant<R>,
+pub struct FstReader<R: BufRead + Seek, H = std::io::Cursor<Vec<u8>>> {
+    input: InputVariant<R, H>,
     meta: MetaData,
 }
 
-enum InputVariant<R: BufRead + Seek> {
+enum InputVariant<R: BufRead + Seek, H = std::io::Cursor<Vec<u8>>> {
     Original(R),
-    Incomplete(R, std::io::BufReader<std::fs::File>),
+    Incomplete(R, H),
     // Uncompressed(BufReader<std::fs::File>),
     UncompressedInMem(std::io::Cursor<Vec<u8>>),
-    IncompleteUncompressedInMem(std::io::Cursor<Vec<u8>>, std::io::BufReader<std::fs::File>),
+    IncompleteUncompressedInMem(std::io::Cursor<Vec<u8>>, H),
 }
 
 /// Filter the changes by time and/or signals
@@ -82,82 +82,103 @@ pub struct FstHeader {
     pub timescale_exponent: i8,
 }
 
-impl<R: BufRead + Seek> FstReader<R> {
-    /// Reads in the FST file meta-data.
-    pub fn open(input: R) -> Result<Self> {
-        Self::open_internal(input, None, false)
+impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
+    pub fn open_incomplete(input: R, hierarchy: H) -> Result<Self> {
+        Self::open_incomplete_internal(input, hierarchy, false)
     }
 
-    pub fn open_and_read_time_table(input: R) -> Result<Self> {
-        Self::open_internal(input, None, true)
+    pub fn open_incomplete_and_read_time_table(input: R, hierarchy: H) -> Result<Self> {
+        Self::open_incomplete_internal(input, hierarchy, true)
     }
 
-    pub fn open_incomplete(input: R, hierarchy: std::io::BufReader<std::fs::File>) -> Result<Self> {
-        Self::open_internal(input, Some(hierarchy), false)
-    }
-
-    pub fn open_incomplete_and_read_time_table(
-        input: R,
-        hierarchy: std::io::BufReader<std::fs::File>,
-    ) -> Result<Self> {
-        Self::open_internal(input, Some(hierarchy), true)
-    }
-
-    fn open_internal(
+    fn open_incomplete_internal(
         mut input: R,
-        mut hierarchy: Option<std::io::BufReader<std::fs::File>>,
+        mut hierarchy: H,
         read_time_table: bool,
     ) -> Result<Self> {
         let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
         match uncompressed_input {
             UncompressGzipWrapper::None => {
-                let (input, meta) =
-                    Self::open_internal_uncompressed(input, hierarchy.as_mut(), read_time_table)?;
+                let (input, meta) = Self::open_incomplete_internal_uncompressed(
+                    input,
+                    &mut hierarchy,
+                    read_time_table,
+                )?;
                 Ok(FstReader {
-                    input: if let Some(hierarchy) = hierarchy {
-                        InputVariant::Incomplete(input, hierarchy)
-                    } else {
-                        InputVariant::Original(input)
-                    },
+                    input: InputVariant::Incomplete(input, hierarchy),
                     meta,
                 })
             }
             UncompressGzipWrapper::InMemory(uc) => {
-                let (uc2, meta) =
-                    Self::open_internal_uncompressed(uc, hierarchy.as_mut(), read_time_table)?;
+                let (uc2, meta) = Self::open_incomplete_internal_uncompressed(
+                    uc,
+                    &mut hierarchy,
+                    read_time_table,
+                )?;
                 Ok(FstReader {
-                    input: if let Some(hierarchy) = hierarchy {
-                        InputVariant::IncompleteUncompressedInMem(uc2, hierarchy)
-                    } else {
-                        InputVariant::UncompressedInMem(uc2)
-                    },
+                    input: InputVariant::IncompleteUncompressedInMem(uc2, hierarchy),
                     meta,
                 })
             }
         }
     }
 
-    fn open_internal_uncompressed<I: BufRead + Seek>(
+    fn open_incomplete_internal_uncompressed<I: BufRead + Seek>(
         input: I,
-        hierarchy: Option<&mut std::io::BufReader<std::fs::File>>,
+        hierarchy: &mut H,
         read_time_table: bool,
     ) -> Result<(I, MetaData)> {
         let mut header_reader = HeaderReader::new(input);
         match header_reader.read(read_time_table) {
             Ok(_) => {}
-            Err(ReaderError::MissingGeometry() | ReaderError::MissingHierarchy())
-                if hierarchy.is_some() =>
-            {
+            Err(ReaderError::MissingGeometry() | ReaderError::MissingHierarchy()) => {
                 header_reader
                     .hierarchy
                     .get_or_insert((HierarchyCompression::Uncompressed, 0));
-                header_reader.reconstruct_geometry(hierarchy.unwrap())?;
+                header_reader.reconstruct_geometry(hierarchy)?;
             }
             Err(e) => return Err(e),
         };
         Ok(header_reader.into_input_and_meta_data().unwrap())
     }
+}
 
+impl<R: BufRead + Seek> FstReader<R> {
+    /// Reads in the FST file meta-data.
+    pub fn open(input: R) -> Result<Self> {
+        Self::open_internal(input, false)
+    }
+
+    pub fn open_and_read_time_table(input: R) -> Result<Self> {
+        Self::open_internal(input, true)
+    }
+
+    fn open_internal(mut input: R, read_time_table: bool) -> Result<Self> {
+        let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
+        match uncompressed_input {
+            UncompressGzipWrapper::None => {
+                let mut header_reader = HeaderReader::new(input);
+                header_reader.read(read_time_table)?;
+                let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
+                Ok(FstReader {
+                    input: InputVariant::Original(input),
+                    meta,
+                })
+            }
+            UncompressGzipWrapper::InMemory(uc) => {
+                let mut header_reader = HeaderReader::new(uc);
+                header_reader.read(read_time_table)?;
+                let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
+                Ok(FstReader {
+                    input: InputVariant::UncompressedInMem(uc2),
+                    meta,
+                })
+            }
+        }
+    }
+}
+
+impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
     pub fn get_header(&self) -> FstHeader {
         FstHeader {
             start_time: self.meta.header.start_time,

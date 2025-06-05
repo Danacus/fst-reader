@@ -188,8 +188,8 @@ fn fst_sys_hierarchy_to_str(entry: &fst_sys::fstHier) -> String {
     }
 }
 
-fn diff_hierarchy<R: std::io::BufRead + std::io::Seek>(
-    our_reader: &mut FstReader<R>,
+fn diff_hierarchy<R: std::io::BufRead + std::io::Seek, H: std::io::BufRead + std::io::Seek>(
+    our_reader: &mut FstReader<R, H>,
     mut exp_hierarchy: VecDeque<String>,
 ) -> Vec<bool> {
     let mut is_real = Vec::new();
@@ -289,8 +289,8 @@ extern "C" fn var_signal_change_callback(
     data.out.push_back(signal);
 }
 
-fn diff_signals<R: std::io::BufRead + std::io::Seek>(
-    our_reader: &mut FstReader<R>,
+fn diff_signals<R: std::io::BufRead + std::io::Seek, H: std::io::BufRead + std::io::Seek>(
+    our_reader: &mut FstReader<R, H>,
     mut exp_signals: VecDeque<(u64, u32, String)>,
 ) {
     let check = |time: u64, handle: FstSignalHandle, value: FstSignalValue| {
