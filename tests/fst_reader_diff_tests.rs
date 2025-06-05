@@ -351,7 +351,7 @@ fn run_incomplete_diff_test(filename: &str, hierarchy: &str, _filter: &FstFilter
     // compare header
     let exp_header = fst_sys_load_header(exp_handle);
     let our_header = our_reader.get_header();
-    // assert_eq!(our_header, exp_header);
+    assert_eq!(our_header, exp_header);
 
     // compare hierarchy
     let exp_hierarchy = fst_sys_load_hierarchy(exp_handle);

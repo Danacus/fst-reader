@@ -482,6 +482,23 @@ impl<R: Read + Seek> HeaderReader<R> {
             kind,
             mem_required_for_traversal,
         };
+
+        // incomplete fst files may have start_time and end_time set to 0,
+        // in which case we can infer it from the data
+        if let Some(Header {
+            start_time: header_start,
+            end_time: header_end,
+            ..
+        }) = self.header.as_mut()
+        {
+            if *header_start == 0 && *header_end == 0 {
+                *header_end = end_time;
+                if self.data_sections.len() == 0 {
+                    *header_start = start_time;
+                }
+            }
+        }
+
         self.data_sections.push(info);
         Ok(())
     }
