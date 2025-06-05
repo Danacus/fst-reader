@@ -188,10 +188,13 @@ fn fst_sys_hierarchy_to_str(entry: &fst_sys::fstHier) -> String {
     }
 }
 
-fn diff_hierarchy<R: std::io::BufRead + std::io::Seek, H: std::io::BufRead + std::io::Seek>(
+fn diff_hierarchy<R: std::io::BufRead + std::io::Seek, H>(
     our_reader: &mut FstReader<R, H>,
     mut exp_hierarchy: VecDeque<String>,
-) -> Vec<bool> {
+) -> Vec<bool>
+where
+    InputVariant<R, H>: ReadHierarchy,
+{
     let mut is_real = Vec::new();
     let check = |entry: FstHierarchyEntry| {
         // remember if variables are real valued
@@ -289,10 +292,12 @@ extern "C" fn var_signal_change_callback(
     data.out.push_back(signal);
 }
 
-fn diff_signals<R: std::io::BufRead + std::io::Seek, H: std::io::BufRead + std::io::Seek>(
+fn diff_signals<R: std::io::BufRead + std::io::Seek, H>(
     our_reader: &mut FstReader<R, H>,
     mut exp_signals: VecDeque<(u64, u32, String)>,
-) {
+) where
+    InputVariant<R, H>: ReadHierarchy,
+{
     let check = |time: u64, handle: FstSignalHandle, value: FstSignalValue| {
         let (exp_time, exp_handle, exp_value) = exp_signals.pop_front().unwrap();
         let actual_as_string = match value {
@@ -340,14 +345,13 @@ fn run_incomplete_diff_test(filename: &str, hierarchy: &str, filter: &FstFilter)
     unsafe { fst_sys::fstReaderClose(exp_handle) };
 }
 
-fn run_diff_test_internal<
-    R: std::io::BufRead + std::io::Seek,
-    H: std::io::BufRead + std::io::Seek,
->(
+fn run_diff_test_internal<R: std::io::BufRead + std::io::Seek, H>(
     mut our_reader: FstReader<R, H>,
     exp_handle: *mut c_void,
     _filter: &FstFilter,
-) {
+) where
+    InputVariant<R, H>: ReadHierarchy,
+{
     // compare header
     let exp_header = fst_sys_load_header(exp_handle);
     let our_header = our_reader.get_header();
