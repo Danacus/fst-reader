@@ -493,7 +493,7 @@ impl<R: Read + Seek> HeaderReader<R> {
         {
             if *header_start == 0 && *header_end == 0 {
                 *header_end = end_time;
-                if self.data_sections.len() == 0 {
+                if self.data_sections.is_empty() {
                     *header_start = start_time;
                 }
             }
